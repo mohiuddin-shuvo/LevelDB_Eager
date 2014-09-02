@@ -1,51 +1,52 @@
-leveldb: A key-value store
-Authors: Sanjay Ghemawat (sanjay@google.com) and Jeff Dean (jeff@google.com)
+leveldb_standalone_secondary-index with eager updates: A key-value store on top of leveldb supporting stand alone secondary indexing with eager updates in the database.
+Authors: Abhinand Menon(ameno002@cs.ucr.edu) and Mohiuddin Abdul Qader (mabdu002@cs.ucr.edu)
+leveldb version: 1.14.0
 
 The code under this directory implements a system for maintaining a
-persistent key/value store.
+persistent key/value store with stand alone index support for secondary attribute with eager updates and implements a lookup interface for query on secondary attribute returning most recent k records. 
 
-See doc/index.html for more explanation.
-See doc/impl.html for a brief overview of the implementation.
 
-The public interface is in include/*.h.  Callers should not include or
-rely on the details of any other header files in this package.  Those
-internal APIs may be changed without warning.
+The Public APIs:
 
-Guide to header files:
+1. static Status Open(const Options& options, const std::string& name, DB** dbptr);
 
-include/db.h
-    Main interface to the DB: Start here
+This API creates/open a database. The new addition to original leveldb option is that primary attribute and secondary attribute name has to be set in database options. Here, options.isSecondaryDB has to be set to false.
+Options{
+ bool using_s_index;
+ std::string primary_key;
+ std::string secondary_key;
+}
 
-include/options.h
-    Control over the behavior of an entire database, and also
-    control over the behavior of individual reads and writes.
+2. Status Put(const WriteOptions& o, const Slice& val);
 
-include/comparator.h
-    Abstraction for user-specified comparison function.  If you want
-    just bytewise comparison of keys, you can use the default comparator,
-    but clients can write their own comparator implementations if they
-    want custom ordering (e.g. to handle different character
-    encodings, etc.)
+This API writes a record in database. It will parse the the primary key and secondary key from the val argument by checking primary and secondary attribute that has been set when the database was created.
 
-include/iterator.h
-    Interface for iterating over data. You can get an iterator
-    from a DB object.
 
-include/write_batch.h
-    Interface for atomically applying multiple updates to a database.
+3. Status Delete(const WriteOptions& options, const Slice& key);
 
-include/slice.h
-    A simple module for maintaining a pointer and a length into some
-    other byte array.
+This API deletes a record from database with the specified primary key. This is same as original leveldb Delete API.
 
-include/status.h
-    Status is returned from many of the public interfaces and is used
-    to report success and various kinds of errors.
 
-include/env.h
-    Abstraction of the OS environment.  A posix implementation of
-    this interface is in util/env_posix.cc
+4. Status Get(const ReadOptions& options, const Slice& key, std::string* value);
 
-include/table.h
-include/table_builder.h
-    Lower-level modules that most clients probably won't use directly
+This API reads a record from database with the specified primary key. This is same as original leveldb Get API.
+
+
+5. virtual Status Get(const ReadOptions& options, const Slice& skey, std::vector<SKeyReturnVal>* value, int kNoOfOutputs);
+
+This API is the new LOOKUP procedure which takes a secondary key and ReadOptions as input argument. A new field in ReadOptions (num_records) has been added which has to be set to the number of K outputs that has to be  returned. This API then returns the most recent top-K a record from database containing the specified secondary key.
+
+
+The return value KeyValuePair contains key and value of the resulting records.
+
+struct KeyValuePair {
+  std::string key;
+  std::string value;
+}
+
+Implementation Details:
+
+
+See doc/index.html for more explanation on original leveldb.
+See doc/impl.html for a brief overview of the implementation of original leveldb.
+See doc/Header files.txt for the guide to header files.

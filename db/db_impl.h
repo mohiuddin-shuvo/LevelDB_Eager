@@ -49,7 +49,9 @@ class DBImpl : public DB {
   virtual Status Get(const ReadOptions& options,
                      const Slice& key, std::vector<KeyValuePair>* value_list);
 
-
+  virtual Status RangeLookUp(const ReadOptions& options,
+                   const Slice& startSkey, const Slice& endSkey,
+                   std::vector<RangeKeyValuePair>* value);
   // Extra methods (for testing) that are not in the public DB interface
 
   // Compact any files in the named level that overlap [*begin,*end]

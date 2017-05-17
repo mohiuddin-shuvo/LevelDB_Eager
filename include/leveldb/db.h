@@ -12,6 +12,7 @@
 
 #include <vector>
 #include <string>
+#include <algorithm>
 
 namespace leveldb {
 
@@ -51,6 +52,33 @@ struct KeyValuePair {
   KeyValuePair(const std::string& k, const std::string& v) : key(k), value(v) { }
 };
 
+struct RangeKeyValuePair {
+  std::string key;
+  std::string value;
+  uint64_t sequence_number;
+  RangeKeyValuePair(){}
+  RangeKeyValuePair(const std::string& k, const std::string& v,const uint64_t& s) : key(k), value(v), sequence_number(s) {}
+
+    static bool comp(const leveldb::RangeKeyValuePair& a,const leveldb::RangeKeyValuePair& b)
+    {
+       return a.sequence_number<b.sequence_number?false:true;
+    }
+    void Push(std::vector<leveldb::RangeKeyValuePair>* heap,leveldb::RangeKeyValuePair val) {
+        heap->push_back(val);
+        push_heap(heap->begin(), heap->end(), comp);
+    }
+    leveldb::RangeKeyValuePair Pop(std::vector<leveldb::RangeKeyValuePair>* heap) {
+        leveldb::RangeKeyValuePair val = heap->front();
+
+        //This operation will move the smallest element to the end of the vector
+        pop_heap(heap->begin(), heap->end(), comp);
+
+        //Remove the last element from vector, which is the smallest element
+        heap->pop_back();
+        return val;
+    }
+};
+
 // A DB is a persistent ordered map from keys to values.
 // A DB is safe for concurrent access from multiple threads without
 // any external synchronization.
@@ -74,6 +102,10 @@ class DB {
                      const Slice& value) = 0;
   virtual Status Get(const ReadOptions& options,
                      const Slice& skey, std::vector<KeyValuePair>* value_list) = 0;
+
+  virtual Status RangeLookUp(const ReadOptions& options,
+                   const Slice& startSkey, const Slice& endSkey,
+                   std::vector<RangeKeyValuePair>* value) = 0;
 
   // Set the database entry for "key" to "value".  Returns OK on success,
   // and a non-OK status on error.

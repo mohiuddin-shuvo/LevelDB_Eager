@@ -35,9 +35,14 @@
 
 #include <string>
 #include <sstream>
+#include <iostream>
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
+#include <unordered_set>
+
+#define SSTR( x ) dynamic_cast< std::ostringstream & >( \
+        ( std::ostringstream() << std::dec << x ) ).str()
 
 namespace leveldb {
 
@@ -1340,6 +1345,7 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
   //outputFile<<"-0";  
   // extract out primary and secondary keys
   std::string pkey = GetAttr(json_val, this->options_.primary_key.c_str());
+  //std::cout<<pkey<<std::endl;
   //outputFile<<"-1";  
   std::string skey = GetAttr(json_val, this->options_.secondary_key.c_str());
   //outputFile<<"-2";
@@ -1353,7 +1359,7 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
   Status sdb_status;
   //outputFile<<"-4";
   // entry for secondary key already exists in the secondary index db
-  
+  SequenceNumber s = versions_->LastSequence()+1;
   if (rstatus.ok()&&!rstatus.IsNotFound()) {
       
    // outputFile<<"1";  
@@ -1361,35 +1367,49 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
     key_list.Parse<0>(pkey_list.c_str());
     //outputFile<<pkey_list<<std::endl;
     
-    bool old_pkey = false;
+    int old_pkey = -1;
     for (rapidjson::SizeType i = 0; i < key_list.Size(); i++) {
-      if (GetVal(key_list[i]) == pkey)
-      {
-        old_pkey = true;
-        break;
-      }
+    	//std::cout<<key_list[i]<<std::endl;
+    	std::string pkeyold = GetVal(key_list[i]);
+    	std::string delim = "+";
+		std::size_t found = pkeyold.find(delim);
+
+		if (found!=std::string::npos)
+			pkeyold = pkeyold.substr(found+1);
+
+	    if (pkeyold == pkey)
+		{
+			old_pkey = (int)i;
+			break;
+		}
     }
 
+    //pkey = SSTR(s)+"+"+pkey;
+
+    //std::cout<<pkey<<std::endl;
     // an existing primary key is being overwritten
-    if (old_pkey) {
+    if (old_pkey>=0) {
         //outputFile<<"2"; 
       std::string new_key_list = "[";
       rapidjson::SizeType j = 0;
 
       // copy into new key list and remove old primary key, maintain (write) order of keys
-      for (rapidjson::SizeType i = 0; i < key_list.Size(); i++)
-        if (GetVal(key_list[i]) != pkey) {
+      int len = key_list.Size();
+      for (int i = 0; i < len; i++)
+      {
+        if (i!=old_pkey) {
           if (j != 0)
             new_key_list += ",";
           new_key_list += ("\"" + GetVal(key_list[i]) + "\"");
           j++;
         }
-    if(new_key_list.size()>0)
-        new_key_list += (",\"" + pkey + "\"]");
-    else
-        new_key_list += ("\"" + pkey + "\"]");
+      }
+	if(new_key_list.size()>0)
+		new_key_list += (",\"" + SSTR(s)+"+"+pkey + "\"]");
+	else
+		new_key_list += ("\"" + SSTR(s)+"+"+pkey + "\"]");
 
-    sdb_status = this->sdb->Put(options, skey, new_key_list);
+      sdb_status = this->sdb->Put(options, skey, new_key_list);
     }
      
     // a new primary key is being added
@@ -1418,9 +1438,9 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
       }
       
        if(new_key_list.size()>0)
-        new_key_list += (",\"" + pkey + "\"]");
+        new_key_list += (",\"" + SSTR(s)+"+"+pkey + "\"]");
     else
-        new_key_list += ("\"" + pkey + "\"]");
+        new_key_list += ("\"" + SSTR(s)+"+"+pkey + "\"]");
       // write list into secondary index db
       //sdb_status = this->sdb->Put(options, skey, strbuf.GetString());
       sdb_status = this->sdb->Put(options, skey, new_key_list);
@@ -1429,10 +1449,14 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
   }
   // entry for secondary key doesn't exist in the secondary index db
   else if (rstatus.IsNotFound()) {
-     
-    //outputFile<<"4"<<pkey<<std::endl; 
+
+	//pkey = SSTR(s)+"+"+pkey;
+	//std::cout<<pkey<<std::endl;
+	//outputFile<<"4"<<pkey<<std::endl;
+	  std::string pkeynew = SSTR(s)+"+"+pkey;
+	  //std::cout<<pkeynew<<std::endl;
     rapidjson::Value key_list(rapidjson::kArrayType);
-    key_list.PushBack(pkey.c_str(), rapidjson::Document().GetAllocator());
+    key_list.PushBack(pkeynew.c_str(), rapidjson::Document().GetAllocator());
     key_list.Accept(writer);
 
     // write list into secondary index db
@@ -1456,6 +1480,101 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
   return sdb_status.ok() ? db_status : sdb_status;
 }
 
+Status DBImpl::RangeLookUp(const ReadOptions& options,
+                 const Slice& startSkey, const Slice& endSkey,
+                 std::vector<RangeKeyValuePair>* value_list)
+{
+	Status s;
+	Iterator* it = this->sdb->NewIterator( leveldb::ReadOptions());
+	std::unordered_set<std::string> resultSetofKeysFound;
+	int topk = options.num_records;
+	for (it->Seek(startSkey); it->Valid(); it->Next())
+	{
+
+		leveldb::Slice key = it->key();
+		std::string seckey = key.ToString();
+		//outputFile<<key.ToString()<<"\n";
+		if( seckey.compare(endSkey.ToString()) > 0)
+		{
+		// key > end
+			break;
+
+		}
+		else
+		{
+			/**
+			* process (key, value)
+			*/
+			Slice v = it->value();
+			std::string val;
+			val.assign(v.data(), v.size());
+
+			rapidjson::Document key_list;
+
+			key_list.Parse<0>(val.c_str());
+			rapidjson::SizeType len = key_list.Size();
+			//std::cout<<len<<std::endl;
+			unsigned i = 0;
+
+			while (i < len )
+			{
+
+				std::string pkey = GetVal(key_list[i]);
+				//std::cout<<pkey<<std::endl;
+				//continue;
+				i++;
+				//Add in result set
+				std::string pValue;
+				std::string delim = "+";
+				std::size_t found = pkey.find(delim);
+
+				if (found!=std::string::npos)
+				{
+					char *pEnd;
+					uint64_t seqN =   std::strtoul(pkey.substr(0, found).c_str(), &pEnd, 0);
+					pkey = pkey.substr(found+1);
+					struct RangeKeyValuePair newVal;;
+
+					newVal.key = pkey;
+					newVal.sequence_number = seqN;
+					int vsize = value_list->size();
+					if(vsize>=topk && seqN<value_list->front().sequence_number)
+						continue;
+
+					if(resultSetofKeysFound.find(pkey)==resultSetofKeysFound.end())
+					{
+
+						Status db_status = this->Get(options, pkey, &pValue);
+						newVal.value = pValue;
+						// if there are no errors, push KV pair onto return vector, latest record first
+						// check for updated values
+						if (db_status.ok()&&!db_status.IsNotFound()) {
+							rapidjson::Document temp_val;
+							temp_val.Parse<0>(pValue.c_str());
+							//outputFile<<pkey<<" -> "<<pValue<<"\n"<<skey.ToString()<<" == "<< GetAttr(temp_val, this->options_.secondary_key.c_str())<<"\n";
+							if (seckey == GetAttr(temp_val, this->options_.secondary_key.c_str()))
+							{
+								if(vsize>=topk)
+									newVal.Pop(value_list);
+								newVal.Push(value_list, newVal);
+								resultSetofKeysFound.insert(pkey);
+
+							}
+						}
+					}
+				}
+
+
+
+			}
+		}
+	}
+	delete it;
+	//std::sort_heap(value_list->begin(),value_list->end(),NewestFirst);
+	    return s;
+
+}
+
 
 // **** added 2014/05/30 - abhinand menon
 // Overloaded interface:
@@ -1477,43 +1596,59 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& skey, std::vector<Ke
 
     // read requested number of records from primary db
     while (num_records > 0 and (int)i >= 0) {
-      std::string pkey = GetVal(key_list[i]);
-      std::string value;
-      Status db_status = this->Get(options, pkey, &value);
+      std::string fullpkey = GetVal(key_list[i]);
+      //std::string value;
+      std::string pValue;
 
-      // if there are no errors, push KV pair onto return vector, latest record first
-      // check for updated values
-      if (db_status.ok()) {
-        rapidjson::Document val;
-        val.Parse<0>(value.c_str());
+	  std::string delim = "+";
+	  std::size_t found = fullpkey.find(delim);
 
-        // check for updates
-        if (skey == GetAttr(val, this->options_.secondary_key.c_str())) {
-          value_list->push_back(KeyValuePair(pkey, value));
+	  std::string pkey;
 
-          //new_key_list.PushBack(pkey.c_str(), rapidjson::Document().GetAllocator());
-          if (j != 0)
-            new_key_list += ",";
-          new_key_list += ("\"" + pkey + "\"");
-          j++;
-        }
-        // trigger read repair
-        else
-          updated = true;
-      }
-      // trigger read repair
-      else if (db_status.IsNotFound())
-        updated = true;
-      // return any errors
-      else
-        return db_status;
+	  if (found!=std::string::npos)
+	  {
 
-      num_records--;
+		  char *pEnd;
+		  uint64_t seqN =   std::strtoul(fullpkey.substr(0, found).c_str(), &pEnd, 0);
+		  pkey = fullpkey.substr(found+1);
+
+		  Status db_status = this->Get(options, pkey, &pValue);
+
+		  // if there are no errors, push KV pair onto return vector, latest record first
+		  // check for updated values
+		  if (db_status.ok()) {
+			rapidjson::Document val;
+			val.Parse<0>(pValue.c_str());
+
+			// check for updates
+			if (skey.ToString() == GetAttr(val, this->options_.secondary_key.c_str())) {
+			  value_list->push_back(KeyValuePair(pkey, pValue));
+
+			  //new_key_list.PushBack(pkey.c_str(), rapidjson::Document().GetAllocator());
+			  if (j != 0)
+				new_key_list += ",";
+			  new_key_list += ("\"" + fullpkey + "\"");
+			  j++;
+			}
+			// trigger read repair
+			else
+			  updated = true;
+		  }
+		  // trigger read repair
+		  else if (db_status.IsNotFound())
+			updated = true;
+		  // return any errors
+		  else
+			return db_status;
+
+		  num_records--;
+	  }
       i--;
+
     }
 
     // perform read repair
-    if (updated) {
+    if (false) {
       // copy any unread primary keys into new list
       while ((int)i >= 0) {
         if (j != 0)

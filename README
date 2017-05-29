@@ -44,6 +44,22 @@ struct KeyValuePair {
   std::string value;
 }
 
+
+6. virtual Status RangeLookUp(const ReadOptions& options, const Slice& startSkey, const Slice& endSkey,
+                   std::vector<RangeKeyValuePair>* value);
+                   
+This API is the new Range LOOKUP procedure which takes a secondary start key and end key and ReadOptions as input argument. A new field in ReadOptions (num_records) has been added which has to be set to the number of K outputs that has to be  returned. This API then returns the most recent top-K a record from database containing the specified secondary key range.
+                   
+
+The return value KeyValuePair contains key and value of the resulting records.
+
+struct RangeKeyValuePair {
+  std::string key;
+  std::string value;
+  uint64_t sequence_number; 
+}
+
+
 Implementation Details:
 
 

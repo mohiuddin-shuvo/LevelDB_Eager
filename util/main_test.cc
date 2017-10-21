@@ -14,14 +14,16 @@
 #include "rapidjson/stringbuffer.h"
 #include <sys/time.h>
 #include <unistd.h>
+#include "leveldb/table.h"
 
 using namespace std;
+using namespace leveldb;
 //NYTweetsUserIDRangerw19
 //Small-CreationTime-Write-Range3
 //static int workloadtype = 2; //static =1, dynamic =2
 #define NUM_BIN 5
 static string basefilepath = "/home/mohiuddin/Desktop/LevelDB_Correctness_Testing/";
-//static int basefilepath = "../";
+//static string basefilepath = "../";
 
 
 static string benchmark_file = basefilepath + "Benchmarks/NYTweetsUserIDRangerw19";
@@ -33,29 +35,39 @@ static string dynamic_workload = basefilepath + "Datasets/WriteHeavy";
 static string dynamic_database = basefilepath + "DB/Eager_Dynamic_UserID";
 static string dynamic_result_file = basefilepath + "Results/Eager_Dynamic_Write.csv";
 static string dynamic_iostat_file = basefilepath + "Results/Eager_Dynamic_Write_iostat.csv";
-static uint64_t MAX_OP = 400000;
+static uint64_t MAX_OP = 2000000;
 static uint64_t DYNAMIC_LOG_POINT =  MAX_OP/2;
 
 
-static string database = basefilepath + "DB/Eager_Static_UserID";
-static string static_dataset =basefilepath + "Datasets/StaticDatasetSmall";
+static string database = basefilepath + "DB/Eageropt_Static_UserID_FATKV_test";
+static string static_dataset =basefilepath + "Datasets/Large/StaticDatasetLarge";
 static string static_query = basefilepath + "Datasets/StaticQueryUser";
 static string static_pr = basefilepath + "Datasets/StaticQueryID";
 
-static string result_file = basefilepath + "Results/Eager_Static_UserID.csv";
-static string iostat_file = basefilepath + "Results/Eager_Static_UserID_iostat.csv";
+static string result_file = basefilepath + "Results/Eageropt_Static_UserID_FATKV_test.csv";
+static string iostat_file = basefilepath + "Results/Eageropt_Static_UserID_iostat_FATKV_test.csv";
 
-static uint64_t MAX_WRITE = 2000000;
-static uint64_t LOG_POINT =  MAX_WRITE/2;
+static string result_hist_file = basefilepath + "Results/Eager_Static_UserID_hist_";
 
-static uint64_t MAX_QUERY =  1000;
-static uint64_t READ_LOG_POINT = MAX_QUERY/2;
+static int startfrom = 3000000;
 
-static uint64_t SAMPLE_FOR_HIST =  MAX_QUERY/100;
+static uint64_t MAX_WRITE = 200000000;
+static uint64_t LOG_POINT =  MAX_WRITE/200;
 
+static uint64_t MAX_QUERY =  10500;
+static int filltablecache = 500;
+static uint64_t READ_LOG_POINT = (MAX_QUERY-filltablecache)/100;
 
-static int topkset[] = {10};
-static int topksetlen = 1;
+static uint64_t MAX_QUERY_LOOKUP = 2000; //10500;
+static int filltablecacheL = 100 ;//500;
+static uint64_t READ_LOG_POINT_L = (MAX_QUERY_LOOKUP-filltablecacheL)/20;
+
+static uint64_t MAX_QUERY_RL =  150;
+static int filltablecacheRL = 0;
+static uint64_t READ_LOG_POINT_RL = (MAX_QUERY_RL-filltablecacheRL)/15;
+
+static uint64_t topkset[] = {10, 100, 1000000};
+static int topksetlen = 3;
 
 
 static std::string PrimaryAtt = "ID";
@@ -83,157 +95,23 @@ std::vector<std::string> split(const std::string &s, char delim) {
     return elems;
 }
 
-void testWithBenchMark()
-{
-    leveldb::DB *db;
-    leveldb::Options options;
-	//////////////////////////////////////////////
-	//string rw = "rw19";
-
-	int bloomfilter = 100;
-//	string sbloomfilter = "100";
-
-    options.filter_policy = leveldb::NewBloomFilterPolicy(bloomfilter);
-    options.primary_key = "ID";
-    //options.secondary_key = "UserID";
-    options.secondary_key = "CreationTime";
-    //options.secondaryAtt = "Hashtags";
-
-    options.create_if_missing = true;
-    options.using_s_index = true;
-    //options.isSecondaryDB = false;
-//    if(isintervaltree)
-//    	options.IntervalTreeFileName = "./interval_tree";
-//    else
-//    	options.IntervalTreeFileName ="";
-
-    leveldb::Status status = leveldb::DB::Open(options, database, &db);
-    assert(status.ok());
-
-    ifstream ifile(benchmark_file.c_str());
-    vector<leveldb::KeyValuePair> svalues;
-    vector<leveldb::RangeKeyValuePair> srangevalues;
-    if (!ifile) { cerr << "Can't open input file " << endl; return; }
-    string line;
-    int i=0;
-    rapidjson::Document d;
-
-    leveldb::ReadOptions roptions;
-    roptions.num_records = topk;
-    double w=0, rs=0, rp=0, rsrange = 0 ;
-    long rscount = 0, rsrangecount = 0 ;
-    double durationW=0,durationRS=0,durationRP=0, durationRSRange=0 ;
-	ofstream ofile(result_file.c_str(),  std::ofstream::out | std::ofstream::app );
-	//ofstream ofile1(result_file1.c_str(),  std::ofstream::out | std::ofstream::app );
-    while(getline(ifile, line)) {
-		i++;
-
-        std::vector<std::string> x = split(line, '\t');
-        leveldb::WriteOptions woptions;
-		struct timeval start, end;
-        if(x.size()>=3) {
-            leveldb::Slice key = x[2];
-//            if(x[1]=="w")
-//            	continue;
-//            cout<<x[1]<<endl;
-//            cout<<x[2]<<endl;
-            gettimeofday(&start, NULL);
-            if(x[1]=="w") {
-                leveldb::Status s = db->Put(woptions,key);
-                gettimeofday(&end, NULL);
-                durationW+= ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
-				w++;
-            } else if(x[1]=="rs") {
-
-            	int isrange = rand() % 2;
-            	//if(!isrange)
-            	{
-					leveldb::Status s = db->Get(roptions, key , &svalues);
-					gettimeofday(&end, NULL);
-					durationRS+= ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
-					int size = svalues.size();
-					rscount+=size;
-					if(svalues.size()>0) {
-						svalues.clear();
-					}
-					rs++;
-            	}
-            //	else
-            	{
-            		x[3] = x[3].substr(0, x[3].length()-1);
-            		leveldb::Slice ekey =x[3];
-            		gettimeofday(&start, NULL);
-            		leveldb::Status s = db->RangeLookUp(roptions, x[2] , x[3] , &srangevalues);
-					gettimeofday(&end, NULL);
-					durationRSRange+= ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
-					int size = srangevalues.size();
-					rsrangecount+=size;
-					if(srangevalues.size()>0) {
-						srangevalues.clear();
-					}
-
-					//sleep(2);
-					rsrange++;
-            	}
-
-                //ofile1<<rs<<", "<<size<<endl;
-            } else if(x[1]=="rp") {
-                std::string pvalue;
-                leveldb::Status s = db->Get(leveldb::ReadOptions(), key , &pvalue);
-                gettimeofday(&end, NULL);
-                durationRP+= ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
-                rp++;
-            }
-        }
-		if (i%LOG_POINT == 0)
-		{
-			if(i/LOG_POINT==20)
-				break;
-
-			if(i/LOG_POINT==1)
-			{
-				ofile << "No of Op (Millions)" <<"," << "Time Per Op." <<"," << "Time Per Write" <<"," << "Time Per Read" <<"," << "Time Per Lookup" <<"," << "Results Per Lookup" <<"," << "Time Per RangeLookup" <<"," << "Results Per RangeLookup" <<endl<<endl;
-				cout << "No of Op (Millions)" <<"," << "Time Per Write" <<"," << "Time Per Read" <<"," << "Time Per Lookup" <<"," << "Results Per Lookup" <<"," << "Time Per RangeLookup" <<"," << "Results Per RangeLookup" <<endl<<endl;
-
-			}
-			cout<< fixed;
-			cout.precision(3);
-			ofile << i/LOG_POINT <<"," << (durationW+durationRP+durationRS+durationRSRange)/i <<"," << durationW/w  <<"," << durationRP/rp <<"," << durationRS/rs <<"," << rscount/rs <<"," << durationRSRange/rsrange <<"," << rsrangecount/rsrange <<endl<<endl;
-		    cout << i/LOG_POINT <<",\t" << (durationW+durationRP+durationRS+durationRSRange)/i <<",\t"
-		    		<< durationW/w  <<",\t" << durationRP/rp <<",\t" << durationRS/rs <<",\t"
-					<< rscount/rs <<",\t" << durationRSRange/rsrange <<",\t"
-					<< rsrangecount/rsrange <<endl<<endl;
-		}
-    }
-
-    cout << i/LOG_POINT <<",\t" << (durationW+durationRP+durationRS+durationRSRange)/i <<",\t"
-    		<< durationW/w  <<",\t" << durationRP/rp <<",\t" << durationRS/rs <<",\t"
-			<< rscount/rs <<",\t" << durationRSRange/rsrange <<",\t"
-			<< rsrangecount/rsrange <<endl<<endl;
-
-
-	delete db;
-    delete options.filter_policy;
-
-
-}
 
 void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 {
 		leveldb::DB *db;
 	    leveldb::Options options;
 
-//	    w_iostat.clear();
-	//    pr_iostat.clear();
-	  //  sr_iostat.clear();
-	    //sr_range_iostat.clear();
+	    w_iostat.clear();
+		pr_iostat.clear();
+		sr_iostat.clear();
+		sr_range_iostat.clear();
 
-	    //ofstream ofile_iostat(iostat_file.c_str(),  std::ofstream::out | std::ofstream::app );
+		ofstream ofile_iostat(iostat_file.c_str(),  std::ofstream::out | std::ofstream::app );
 
 		int bloomfilter = 100;
 
 	    options.filter_policy = leveldb::NewBloomFilterPolicy(bloomfilter);
-	    options.max_open_files = 1000;
+	    options.max_open_files = 5000;
 	    options.block_cache = leveldb::NewLRUCache(100 * 1048576);  // 100MB cache
 
 	    options.primary_key = PrimaryAtt;
@@ -246,7 +124,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 	    assert(status.ok());
 
 	    string line;
-	    uint64_t i=0;
+	    int i=0;
 	    rapidjson::Document d;
 
 	    leveldb::ReadOptions roptions;
@@ -273,13 +151,15 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 
 			ofile << "Op Type"  <<"," << "No of Op (Millions)" <<"," << "Time Per Op." << "," << "Results Per Op" <<endl;
 
-			//w_iostat.print(0, ofile_iostat, "");
+			w_iostat.print(0, ofile_iostat, "");
 
 
 
 			std::string tweet;
 			while(getline(ifile, tweet)) {
 				i++;
+				if(i<=startfrom)
+					continue;
 				leveldb::WriteOptions woptions;
 
 				//std::string pkey;
@@ -292,6 +172,8 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 				durationW+= ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
 				w++;
 
+				if(w%100000 == 0 )
+					cout << "Put,"<< w/100000 <<"," << durationW/w <<",0"<<endl;
 
 				if (w%LOG_POINT == 0)
 				{
@@ -300,7 +182,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 					ofile << "Put,"<< w/LOG_POINT <<"," << durationW/w <<",0"<<endl;
 
 					cout << "Put,"<< w/LOG_POINT <<"," << durationW/w <<",0"<<endl;
-					//w_iostat.print(w, ofile_iostat, "Put");
+					w_iostat.print(w, ofile_iostat, "Put");
 
 					if(w>=MAX_WRITE)
 						break;
@@ -325,7 +207,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 			while(getline(ifile_pr, pread)) {
 				//i++;
 				std::string pvalue;
-				//roptions.type = ReadType::PRead;
+				roptions.type = ReadType::PRead;
 				gettimeofday(&start, NULL);
 				leveldb::Status s = db->Get(roptions, pread , &pvalue);
 				gettimeofday(&end, NULL);
@@ -344,7 +226,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 					ofile << "Get,"<< rp/READ_LOG_POINT <<"," << durationRP/rp <<","<<found<<endl;
 
 					cout << "Get,"<< rp/READ_LOG_POINT <<"," << durationRP/rp <<","<<found<<endl;
-					//pr_iostat.print(rp, ofile_iostat, "Get");
+					pr_iostat.print(rp, ofile_iostat, "Get");
 
 					if(rp>=MAX_QUERY)
 						break;
@@ -361,6 +243,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 
 		//End of All Reads, Read on Secondary Lookup Begins
 
+		int readop = 0;
 		if(selectivityfactor>=0)
 		{
 			std::string query;
@@ -369,24 +252,22 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 			ifstream ifile_q(static_query.c_str());
 			if (!ifile_q) { cerr << "Can't open query file " << endl; return; }
 
-			for(int t=0; t<topksetlen; t++)
+			for(int s = 0 ; s < numberofselectivity; s++)
 			{
-				//cout<<"\nInsert topk (insert 0 to end): "; cin>>topk;
-				//cout<<"Insert selectivity, (0-1), 0 means Point Lookup, 1 means range "; cin>>selectivity;
+				if(selectivityfactor != s && selectivityfactor <numberofselectivity )
+					continue;
 
-				topk = topkset[t];
-
-
-				roptions.num_records = topk;
-
-				if(topk ==0)
-					break;
-
-
-				for(int s = 0 ; s < numberofselectivity; s++)
+				for(int t=0; t<topksetlen; t++)
 				{
-					if(selectivityfactor != s && selectivityfactor <numberofselectivity )
-						continue;
+					//cout<<"\nInsert topk (insert 0 to end): "; cin>>topk;
+					//cout<<"Insert selectivity, (0-1), 0 means Point Lookup, 1 means range "; cin>>selectivity;
+
+					topk = topkset[t];
+					roptions.num_records = topk;
+
+					if(topk ==0)
+						break;
+
 				    vector<leveldb::KeyValuePair> svalues;
 				    vector<leveldb::RangeKeyValuePair> srangevalues;
 
@@ -397,9 +278,29 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 
 					ifile_q.seekg(0, ios::beg);
 
-					double minDuration = 99999999999 , maxDuration=-1;
-					int binsize = 0;
-					double durationRSHist[NUM_BIN]  = {0};
+//					double minDuration = 99999999999 , maxDuration=-1;
+//					int binsize = 0;
+//					double durationRSHist[NUM_BIN]  = {0};
+
+					string histfile;
+					if(s == 0)
+					{
+						histfile = result_hist_file+"Lookup-k="+to_string(topk);
+						READ_LOG_POINT = READ_LOG_POINT_L;
+						MAX_QUERY = MAX_QUERY_LOOKUP;
+						filltablecache = filltablecacheL;
+
+					}
+					else
+					{
+						histfile = result_hist_file + "RangeLookup-k="+to_string(topk)+"sel="+to_string(s);
+						READ_LOG_POINT = READ_LOG_POINT_RL;
+						MAX_QUERY = MAX_QUERY_RL;
+						filltablecache = filltablecacheRL;
+					}
+
+					ofstream ofile_hist(histfile.c_str(),  std::ofstream::out );
+
 					while(getline(ifile_q, query)) {
 
 						std::vector<std::string> x = split(query, '\t');
@@ -415,7 +316,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 							if(sel==0)
 							{
 
-								//roptions.type = ReadType::SRead;
+								roptions.type = ReadType::SRead;
 								gettimeofday(&start, NULL);
 								leveldb::Status s = db->Get(roptions, x[1] , &svalues);
 								gettimeofday(&end, NULL);
@@ -428,7 +329,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 							}
 							else
 							{
-								//roptions.type = ReadType::SRRead;
+								roptions.type = ReadType::SRRead;
 
 								gettimeofday(&start, NULL);
 								leveldb::Status s = db->RangeLookUp(roptions, x[1] , x[2] , &srangevalues);
@@ -440,37 +341,43 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 								}
 
 							}
+							if(readop<filltablecache)
+							{
+								readop++;
+								continue;
+							}
 
-							double duration =  ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
+
+							double duration =  ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec))/1000.0;
 							durationRS+= duration;
 
 							rs++;
-
-							if(rs<SAMPLE_FOR_HIST)
+							ofile_hist<<duration<<endl;
+//							if(rs<SAMPLE_FOR_HIST)
+//							{
+//								if(duration < minDuration )
+//									minDuration =duration;
+//								if(duration > maxDuration)
+//									maxDuration = duration;
+//
+//							}
+//							else if(rs == SAMPLE_FOR_HIST)
+//							{
+//								binsize = (int)(maxDuration - 1) / NUM_BIN;
+//
+//							}
+//							else
 							{
-								if(duration < minDuration )
-									minDuration =duration;
-								if(duration > maxDuration)
-									maxDuration = duration;
-
-							}
-							else if(rs == SAMPLE_FOR_HIST)
-							{
-								binsize = (int)(maxDuration - 1) / NUM_BIN;
-
-							}
-							else
-							{
-								int x= 1;
-								for(int b=0;b<NUM_BIN;b++)
-								{
-									x += binsize;
-									if(duration <= x || b==NUM_BIN-1)
-									{
-										durationRSHist[b]++;
-										break;
-									}
-								}
+//								int x= 1;
+//								for(int b=0;b<NUM_BIN;b++)
+//								{
+//									x += binsize;
+//									if(duration <= x || b==NUM_BIN-1)
+//									{
+//										durationRSHist[b]++;
+//										break;
+//									}
+//								}
 
 								if(rs%READ_LOG_POINT == 0)
 								{
@@ -480,29 +387,29 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 									if(s == 0)
 									{
 										optype =  "Lookup-k="+to_string(topk);
-										//sr_iostat.print(rs, ofile_iostat, optype.c_str());
+										sr_iostat.print(rs, ofile_iostat, optype.c_str());
 
 									}
 									else
 									{
 										optype = "RangeLookup-k="+to_string(topk)+"sel="+to_string(s);
-										//sr_range_iostat.print(rs, ofile_iostat, optype.c_str());
+										sr_range_iostat.print(rs, ofile_iostat, optype.c_str());
 
 									}
 									ofile << optype << ","<< rs/READ_LOG_POINT <<"," << durationRS/rs <<","<<rscount/rs<< endl;
 									cout<<  optype<< ","<< rs/READ_LOG_POINT <<"," << durationRS/rs <<","<<rscount/rs<< endl;
 
-
-									int x = 0;
-									for (int b = 0; b < NUM_BIN; b++)
-									{
-										x += binsize;
-										ofile << x <<","<<  durationRSHist[b] << ",";
-										cout << x <<","<<  durationRSHist[b] << ",";
-
-									}
-									ofile<<endl;
-									cout<<endl;
+//
+//									int x = 0;
+//									for (int b = 0; b < NUM_BIN; b++)
+//									{
+//										x += binsize;
+//										ofile << x <<","<<  durationRSHist[b] << ",";
+//										cout << x <<","<<  durationRSHist[b] << ",";
+//
+//									}
+//									ofile<<endl;
+//									cout<<endl;
 
 									if(rs>=MAX_QUERY)
 										break;
@@ -516,6 +423,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 					}
 
 					ifile_q.clear();
+					ofile_hist.close();
 					//delete durationRSHist;
 				}
 
@@ -531,7 +439,7 @@ void PerformStaticWorkload(bool put, bool get, int selectivityfactor)
 		delete options.block_cache;
 		delete options.filter_policy;
 		ofile.close();
-		//ofile_iostat.close();
+		ofile_iostat.close();
 
 
 }
@@ -541,12 +449,12 @@ void PerformDynamicWorkload()
 	leveldb::DB *db;
 	leveldb::Options options;
 
-//	    w_iostat.clear();
-//    pr_iostat.clear();
-  //  sr_iostat.clear();
-	//sr_range_iostat.clear();
+	w_iostat.clear();
+    pr_iostat.clear();
+    sr_iostat.clear();
+	sr_range_iostat.clear();
 
-	//ofstream ofile_iostat(iostat_file.c_str(),  std::ofstream::out | std::ofstream::app );
+	ofstream ofile_iostat(dynamic_iostat_file.c_str(),  std::ofstream::out | std::ofstream::app );
 
 	int bloomfilter = 100;
 
@@ -604,7 +512,7 @@ void PerformDynamicWorkload()
             }
             else if(x[0]=="rs") {
 
-            	//roptions.type = ReadType::SRead;
+            	roptions.type = ReadType::SRead;
 
 				gettimeofday(&start, NULL);
 				leveldb::Status s = db->Get(roptions, x[1] , &svalues);
@@ -620,7 +528,7 @@ void PerformDynamicWorkload()
 
             } else if(x[0]=="rp") {
                 std::string pvalue;
-               // roptions.type = ReadType::PRead;
+                roptions.type = ReadType::PRead;
                 leveldb::Status s = db->Get(roptions, x[1] , &pvalue);
                 gettimeofday(&end, NULL);
                 durationRP+= ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
@@ -638,29 +546,31 @@ void PerformDynamicWorkload()
 
 				cout << "No of Op (Millions)"  <<"," << "Time Per Op."  <<"," << "Time Per Write" <<"," << "Time Per Read" <<"," << "Time Per Lookup" <<"," << "Results Per Lookup" <<endl;
 
-				//sr_iostat.print(0, ofile_iostat, "");
+				sr_iostat.print(0, ofile_iostat, "");
 
 			}
 			cout<< fixed;
 			cout.precision(3);
+			ofile<< fixed;
+			ofile.precision(3);
 			ofile << i/DYNAMIC_LOG_POINT <<"," << (durationW+durationRP+durationRS)/i <<"," << durationW/w  <<"," << durationRP/rp <<"," << durationRS/rs <<"," << rscount/rs <<endl;
 			cout << i/DYNAMIC_LOG_POINT <<",\t" << (durationW+durationRP+durationRS)/i <<",\t" << durationW/w  <<",\t" << durationRP/rp <<",\t" << durationRS/rs <<",\t" << rscount/rs <<endl;
 
-			//cout<< "\nLookup IOStat\n\n";
+			cout<< "\nLookup IOStat\n\n";
 			//printiostat(lookup_iostat, rs);
-			//sr_iostat.print(rs, ofile_iostat, "Lookup");
-			//sr_iostat.print(rs);
+			sr_iostat.print(rs, ofile_iostat, "Lookup");
+			sr_iostat.print(rs);
 
 			//cout<< "\nRange Lookup IOStat\n\n";
 			//sr_range_iostat.print(rsrange, ofile_iostat, "RangeLookup");
 			//printiostat(range_lookup_iostat, rsrange);
 
 			//cout<< "\nGET IOStat\n\n";
-			//pr_iostat.print(rp, ofile_iostat,"Get");
+			pr_iostat.print(rp, ofile_iostat,"Get");
 			//printiostat(get_iostat, rp);
 
 			//cout<< "\nWrite IOStat\n\n";
-			//w_iostat.print(w, ofile_iostat, "Put");
+			w_iostat.print(w, ofile_iostat, "Put");
 
 			if(i >= MAX_OP)
 				break;
@@ -673,7 +583,7 @@ void PerformDynamicWorkload()
     delete options.filter_policy;
     delete options.block_cache;
     ofile.close();
-    //ofile_iostat.close();
+    ofile_iostat.close();
 
 }
 
@@ -692,8 +602,28 @@ int main(int argc, char** argv) {
 	}
 	else
 	{
-		PerformDynamicWorkload();
-		//PerformStaticWorkload(false, false, 3);
+		//PerformDynamicWorkload();
+		PerformStaticWorkload(true, false, -1);
+//		string te= "[\"1+10\",\"2+12\"]";
+//		rapidjson::Document key_list;
+//		key_list.Parse<0>(te.c_str());
+//
+//		string st =  (  to_string(3)+"+"+"13");
+//
+//		rapidjson::Document::AllocatorType& allocator = key_list.GetAllocator();
+//
+//		key_list.PushBack(st.c_str(), allocator);
+//		string st2 =  ( to_string(4)+"+"+ "15"  );
+//		key_list.PushBack(st2.c_str(), allocator);
+//
+//		rapidjson::StringBuffer strbuf;
+//		rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
+//
+//		key_list.Accept(writer);
+//		cout<< strbuf.GetString() <<endl;
+
+
+
 		cout<<"Please Put arguments in order: \n arg1=benchmarkpath arg2=dbpath arg3=resultpath\n";
 	}
 	//cout<<"\nasdasd\n";

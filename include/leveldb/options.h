@@ -29,7 +29,15 @@ enum CompressionType {
   kNoCompression     = 0x0,
   kSnappyCompression = 0x1
 };
-
+enum ReadType {
+  // NOTE: do not change the values of existing entries, as these are
+  // part of the persistent format on disk.
+  PRead,
+  SRead,
+  SRRead,
+  Write,
+  Meta
+};
 // Options to control the behavior of a database (passed to DB::Open)
 struct Options {
   // -------------------
@@ -177,12 +185,14 @@ struct ReadOptions {
   // Number of records to fetch (for secondary key reads):
   int num_records;
 
-  ReadOptions()
-      : verify_checksums(false),
-        fill_cache(true),
-        snapshot(NULL) ,
-        num_records(1) {
-  }
+  ReadType type;
+	ReadOptions()
+		: verify_checksums(false),
+		  fill_cache(true),
+		type(ReadType::Write),
+		  snapshot(NULL) ,
+		  num_records(1) {
+	}
 };
 
 // Options that control write operations

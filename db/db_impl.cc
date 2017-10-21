@@ -41,6 +41,9 @@
 #include "rapidjson/writer.h"
 #include <unordered_set>
 
+#include <stdlib.h>     /* srand, rand */
+#include <sys/time.h>
+
 #define SSTR( x ) dynamic_cast< std::ostringstream & >( \
         ( std::ostringstream() << std::dec << x ) ).str()
 
@@ -1347,7 +1350,20 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
 
   // check if the secondary key already exists in the secondary index db
   std::string pkey_list;
+
+
+  int pr = 0;
+   if(rand()%5000==0)
+ 	  pr =1;
+  struct timeval start, end;
+  gettimeofday(&start, NULL);
   Status rstatus = this->sdb->Get(ReadOptions(), skey, &pkey_list);
+  gettimeofday(&end, NULL);
+
+
+  double duration = ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
+  if(pr==1)
+	  std::cout<<duration<<std::endl;
 
 
   // define variables for writing into secondary db
@@ -1358,11 +1374,30 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
 
   // entry for secondary key already exists in the secondary index db
   SequenceNumber s = versions_->LastSequence()+1;
+  gettimeofday(&start, NULL);
+
+
   if (rstatus.ok()&&!rstatus.IsNotFound()) {
-      
-   // outputFile<<"1";  
-    rapidjson::Document key_list;
-    key_list.Parse<0>(pkey_list.c_str());
+	  rapidjson::Document 	key_list;
+   // outputFile<<"1";
+	key_list.Parse<0>(pkey_list.c_str());
+	rapidjson::Document::AllocatorType& allocator = key_list.GetAllocator();
+	std::string newpkey = SSTR(s)+"+"+pkey;
+	key_list.PushBack(newpkey.c_str(), allocator);
+
+	key_list.Accept(writer);
+	std::string vals = strbuf.GetString();
+	gettimeofday(&end, NULL);
+
+	 duration = ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
+	  if(pr==1)
+		  std::cout<<duration<< "\t-> " << vals.size() << std::endl;
+
+	  gettimeofday(&start, NULL);
+	sdb_status = this->sdb->Put(options, skey,vals );
+
+
+
     //outputFile<<pkey_list<<std::endl;
     
 //    int old_pkey = -1;
@@ -1410,38 +1445,35 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
      
     // a new primary key is being added
 //    else
-    {
-    
-      //outputFile<<"3"; 
-      
-      //key_list.PushBack(pkey.c_str(), key_list.GetAllocator());
-      //key_list.Accept(writer);
-   
-
-      std::string new_key_list = "[";
-      rapidjson::SizeType j = 0;
-
-      // copy into new key list and remove old primary key, maintain (write) order of keys
-      for (rapidjson::SizeType i = 0; i < key_list.Size(); i++)
-      {
-         
-          if (j != 0)
-            new_key_list += ",";
-          new_key_list += ("\"" + GetVal(key_list[i]) + "\"");
-          j++;
-        
-
-        
-      }
-      
-       if(new_key_list.size()>1)
-        new_key_list += (",\"" + SSTR(s)+"+"+pkey + "\"]");
-       else
-        new_key_list += ("\"" + SSTR(s)+"+"+pkey + "\"]");
-      // write list into secondary index db
-      //sdb_status = this->sdb->Put(options, skey, strbuf.GetString());
-      sdb_status = this->sdb->Put(options, skey, new_key_list);
-    }
+//    {
+//
+//      //outputFile<<"3";
+//
+//      //key_list.PushBack(pkey.c_str(), key_list.GetAllocator());
+//      //key_list.Accept(writer);
+//
+//
+//      std::string new_key_list = "[";
+//      rapidjson::SizeType j = 0;
+//
+//      // copy into new key list and remove old primary key, maintain (write) order of keys
+//      for (rapidjson::SizeType i = 0; i < key_list.Size(); i++)
+//      {
+//
+//          if (j != 0)
+//            new_key_list += ",";
+//          new_key_list += ("\"" + GetVal(key_list[i]) + "\"");
+//          j++;
+//      }
+//
+//       if(new_key_list.size()>1)
+//        new_key_list += (",\"" + SSTR(s)+"+"+pkey + "\"]");
+//       else
+//        new_key_list += ("\"" + SSTR(s)+"+"+pkey + "\"]");
+//      // write list into secondary index db
+//      //sdb_status = this->sdb->Put(options, skey, strbuf.GetString());
+//      sdb_status = this->sdb->Put(options, skey, new_key_list);
+//    }
     
   }
   // entry for secondary key doesn't exist in the secondary index db
@@ -1462,6 +1494,13 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
   // error with read
   else return rstatus;
 
+
+  gettimeofday(&end, NULL);
+
+  duration = ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
+  if(pr==1)
+	  std::cout<<duration<<std::endl;
+
   //outputFile<<"5"; 
 
   // remove primary key from json object and write value into primary db
@@ -1470,7 +1509,14 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& value) {
   rapidjson::Writer<rapidjson::StringBuffer> pwriter(pstrbuf);
   json_val.Accept(pwriter);
 
+  gettimeofday(&start, NULL);
   Status db_status = this->Put(options, pkey, pstrbuf.GetString());
+  gettimeofday(&end, NULL);
+
+  duration = ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
+  if(pr==1)
+	  std::cout<<duration<<std::endl<<std::endl;
+
 
   //outputFile<<"6"; 
   // return any errors, secondary db errors first
@@ -1992,6 +2038,12 @@ Status DB::Open(const Options& options, const std::string& dbname,
     Options soption;
     soption.create_if_missing = true;
     soption.using_s_index = false;
+
+    soption.filter_policy = leveldb::NewBloomFilterPolicy(100);
+    soption.max_open_files = 20000;
+    soption.write_buffer_size = 16<<20;
+    soption.block_cache = leveldb::NewLRUCache(100 * 1048576);  // 100MB cache
+
     Status sstatus = DB::Open(soption, sdbname, &impl->sdb);
 
     // return any errors, secondary db errors first

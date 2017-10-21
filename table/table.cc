@@ -3,7 +3,6 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "leveldb/table.h"
-
 #include "leveldb/cache.h"
 #include "leveldb/comparator.h"
 #include "leveldb/env.h"
@@ -16,6 +15,11 @@
 #include "util/coding.h"
 
 namespace leveldb {
+
+IOStat pr_iostat;
+IOStat sr_iostat;
+IOStat sr_range_iostat;
+IOStat w_iostat;
 
 struct Table::Rep {
   ~Rep() {
@@ -92,6 +96,7 @@ void Table::ReadMeta(const Footer& footer) {
   // TODO(sanjay): Skip this if footer.metaindex_handle() size indicates
   // it is an empty block.
   ReadOptions opt;
+  opt.type = ReadType::Meta;
   BlockContents contents;
   if (!ReadBlock(rep_->file, opt, footer.metaindex_handle(), &contents).ok()) {
     // Do not propagate errors since meta info is not needed for operation
@@ -120,6 +125,7 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
   // We might want to unify with ReadBlock() if we start
   // requiring checksum verification in Table::Open.
   ReadOptions opt;
+  opt.type = ReadType::Meta;
   BlockContents block;
   if (!ReadBlock(rep_->file, opt, filter_handle, &block).ok()) {
     return;
@@ -166,6 +172,15 @@ Iterator* Table::BlockReader(void* arg,
   // can add more features in the future.
 
   if (s.ok()) {
+	  if(options.type == ReadType::Write)
+			w_iostat.numberofIO++;
+		else if(options.type == ReadType::PRead)
+			pr_iostat.numberofIO++;
+		else if(options.type == ReadType::SRead)
+			sr_iostat.numberofIO++;
+		else if(options.type == ReadType::SRRead)
+			sr_range_iostat.numberofIO++;
+
     BlockContents contents;
     if (block_cache != NULL) {
       char cache_key_buffer[16];
@@ -175,6 +190,17 @@ Iterator* Table::BlockReader(void* arg,
       cache_handle = block_cache->Lookup(key);
       if (cache_handle != NULL) {
         block = reinterpret_cast<Block*>(block_cache->Value(cache_handle));
+
+        if(options.type == ReadType::Write)
+			w_iostat.cachehit++;
+		else if(options.type == ReadType::PRead)
+			pr_iostat.cachehit++;
+		else if(options.type == ReadType::SRead)
+			sr_iostat.cachehit++;
+		else if(options.type == ReadType::SRRead)
+			sr_range_iostat.cachehit++;
+
+
       } else {
         s = ReadBlock(table->rep_->file, options, handle, &contents);
         if (s.ok()) {
